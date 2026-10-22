@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:os="http://www.mulesoft.org/schema/mule/os"
+      xmlns="http://www.mulesoft.org/schema/mule/core"
+      xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xmlns:http="http://www.mulesoft.org/schema/mule/http"
+      xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xsi:schemaLocation="
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd 
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd 
+        http://www.mulesoft.org/schema/mule/core
+        http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+        http://www.mulesoft.org/schema/mule/http
+        http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+        http://www.mulesoft.org/schema/mule/ee/core
+        http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+http://www.mulesoft.org/schema/mule/os http://www.mulesoft.org/schema/mule/os/current/mule-os.xsd">
+
+    <http:listener-config name="HTTP_Listener_config">
+        <http:listener-connection host="0.0.0.0" port="8081"/>
+    </http:listener-config>
+
+    <os:object-store name="Object_store" doc:name="Object store" doc:id="6df33feb-5647-4ee6-b1da-44cb87e8a4ed" />
+	<flow name="duplicate-order-flow">
+
+        <http:listener config-ref="HTTP_Listener_config"
+                       path="/order"
+                       allowedMethods="POST">
+            <http:response statusCode="#[vars.httpStatus default 200]"/>
+        </http:listener>
+
+        <set-variable variableName="incomingOrder"
+                      value="#[payload]"/>
+
+        <!-- FIRST CHOICE: Validate incoming order -->
+        <choice>
+
+            <when expression="#[(payload is Object)&#10;and !isEmpty(payload.orderId default '')&#10;and !isEmpty(payload.customerName default '')&#10;and (payload.amount default 0) is Number&#10;and (payload.amount default 0) &gt; 0]">
+
+                <!-- TRANSFORM: Hardcoded duplicate check and field mapping -->
+                <ee:transform doc:name="Transform Order">
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/java
+---
+{
+    orderId: payload.orderId,
+    customerName: payload.customerName,
+    amount: payload.amount,
+    currency: payload.currency,
+    orderType: payload.orderType,
+    paymentStatus: payload.paymentStatus,
+    shippingAddress: payload.shippingAddress,
+    items: payload.items,
+    priority: payload.priority
+}]]></ee:set-payload>
+                    </ee:message>
+                </ee:transform>
+
+                <!-- LOGGER -->
+                <logger level="INFO"
+                        message="#['Mapped order payload: ' ++ write(payload, 'application/json')]"/>
+                        <os:contains key="#[vars.incomingOrder.orderId]"
+                             objectStore="Object_store"
+                             target="isDuplicate"/>
+
+                <!-- SECOND CHOICE: Check empty or non-empty payload -->
+                <choice>
+
+                    <when expression="#[vars.isDuplicate == false]">
+
+                      <os:store key="#[vars.incomingOrder.orderId]"
+                                  objectStore="Object_store">
+                            <os:value><![CDATA[#[vars.incomingOrder.orderId]]]></os:value>
+                        </os:store>
+
+                        <set-variable variableName="httpStatus" value="#[201]"/>
+
+                        <ee:transform doc:name="Order Created Response">
+                            <ee:message>
+                                <ee:set-payload><![CDATA[
+%dw 2.0
+output application/json
+---
+{
+    orderId: payload.orderId,
+    customerName: payload.customerName,
+    amount: payload.amount,
+    status: "CREATED",
+    message: "Order created successfully"
+}
+                                ]]></ee:set-payload>
+                            </ee:message>
+                        </ee:transform>
+
+                    
+</when>
+
+                    <otherwise>
+
+                        <set-variable variableName="httpStatus"
+                                      value="#[200]"/>
+
+                        <ee:transform doc:name="Duplicate Order Response">
+                            <ee:message>
+                                <ee:set-payload><![CDATA[
+%dw 2.0
+output application/json
+---
+{
+    orderId: payload.incomingOrder.orderId,
+    status: "DUPLICATE",
+    message: "Order already exists"
+}
+                                ]]></ee:set-payload>
+                            </ee:message>
+                        </ee:transform>
+
+                    
+</otherwise>
+
+                </choice>
+
+            
+</when>
+
+            <!-- FIRST CHOICE DEFAULT: Invalid order -->
+            <otherwise>
+
+                <set-variable variableName="httpStatus"
+                              value="#[400]"/>
+
+                <ee:transform doc:name="Invalid Order Response">
+                    <ee:message>
+                        <ee:set-payload><![CDATA[
+%dw 2.0
+output application/json
+---
+{
+    errorCode: "INVALID_ORDER",
+    message: "Order ID, customer name and positive numeric amount are required"
+}
+                        ]]></ee:set-payload>
+                    </ee:message>
+                </ee:transform>
+
+            
+</otherwise>
+
+        </choice>
+
+        <logger level="INFO"
+                message="#[payload]"/>
+
+    
+</flow>
+</mule>
